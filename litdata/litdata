@@ -165,8 +165,8 @@ class LITDataset:
         shard_path = os.path.join(self.root, shard_name)
         with tarfile.open(shard_path, 'r') as tar:
             for extidx, offset in zip(os_argsort, os_sorted):
-                tar.offset = offset                             # Move to indexed offset
-                member = tar.next()                             # Read header at offset
+                tar.fileobj.seek(offset)                        # type: ignore
+                member = tarfile.TarInfo.fromtarfile(tar)
                 data = tar.extractfile(member).read()           # type: ignore
                 out[extidx] = self.decoders[extidx](data)
         
