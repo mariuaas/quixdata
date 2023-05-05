@@ -33,8 +33,31 @@ Author: Marius Aasan <mariuaas@ifi.uio.no>
 
 _LITDataset_t = TypeVar('_LITDataset_t', bound='LITDataset')
 
+class LITMapTuple:
 
-class LITDataset:
+    def __init__(self, maps):
+        assert all([isinstance(m, Callable) for m in maps])
+        #assert all([len(inspect.signature(m).parameters) == 1 for m in maps]) # Ignore this assertion for now
+        self.maps = maps
+    
+    def fnapply(self, fn, x):
+        return fn(x)
+
+    def __call__(self, y):
+        return list(map(self.fnapply, self.maps, y))
+    
+
+class LITMapAll:
+    def __init__(self, mapping):
+        assert isinstance(mapping, Callable)
+        #assert len(inspect.signature(mapping).parameters) == 1 # Ignore this assertion for now
+        self.mapping = mapping
+
+    def __call__(self, y):
+        return list(map(self.mapping, y))
+
+
+class LITDataset(Dataset):
     
     '''Local Indexed Tar Dataset.
     
@@ -229,7 +252,7 @@ class LITDataset:
     @staticmethod
     def _non_decoder(data:bytes):
         return data
-    
+        
     def map_tuple(self, *maps:Tuple[Callable,...]) -> _LITDataset_t:
         '''Takes a set of mappings and applies them to individual extensions.
         
@@ -241,11 +264,10 @@ class LITDataset:
 
         Returns:
             LITDataset: Returns the dataset with added transformations.
-        '''
+        '''  
         assert len(maps) == len(self.use_extensions)
-        assert all([isinstance(m, Callable) for m in maps])
-        assert all([len(inspect.signature(m).parameters) == 1 for m in maps]) # type: ignore
-        self.transforms.append(lambda y: list(map(lambda f, x: f(x), maps, y))) # type: ignore
+        # Removed some assertions for now, will be moved to the init of the LITMapTuple class
+        self.transforms.append(LITMapTuple(maps))
         return self # type: ignore
                 
     def map_all(self, mapping:Callable) -> _LITDataset_t:
@@ -260,9 +282,9 @@ class LITDataset:
         Returns:
             LITDataset: Returns the dataset with added transformations.
         '''
-        assert isinstance(mapping, Callable)
         assert len(inspect.signature(mapping).parameters) == 1
-        self.transforms.append(lambda y: list(map(lambda x: mapping(x), y)))
+        # Removed some assertions for now, will be moved to the init of the LITMapAll class
+        self.transforms.append(LITMapAll(mapping))
         return self # type: ignore
         
     def map(self, mapping:Callable) -> _LITDataset_t:
@@ -277,7 +299,6 @@ class LITDataset:
         Returns:
             LITDataset: Returns the dataset with added transformations.
         '''
-        assert isinstance(mapping, Callable)
         assert len(inspect.signature(mapping).parameters) == len(self.use_extensions)
         self.transforms.append(mapping)
         return self # type: ignore
@@ -383,3 +404,4 @@ class LITDataset:
             offsets += full_list
         
         return offsets
+    
