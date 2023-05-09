@@ -3,6 +3,7 @@ import json
 import tarfile
 import os
 import inspect
+from torch.utils.data import Dataset
 
 from io import BytesIO
 from PIL import Image
@@ -176,6 +177,7 @@ class LITDataset(Dataset):
         # Load keys, incl. shard name and extension offsets.
         key_tuple = self.offset_index[key]
         shard_name, offsets = key_tuple[0], key_tuple[2:]
+        print(key_tuple[1])
         
         # Apply offsets in ascending order
         os_argsort = [i for i, _ in sorted(enumerate(offsets), key=lambda x: x[1])]
