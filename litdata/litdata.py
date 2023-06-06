@@ -11,6 +11,8 @@ from typing import (
     Tuple, Dict, Iterable, List, Callable, Union, TypeVar, Optional
 )
 
+from .encoders import DEFAULT_DECODERS
+
 '''
 litdata is a compact dataset handler for local indexed tar sharded datasets.
 
@@ -73,10 +75,10 @@ class LITDataset(Dataset):
     and passing this to the DataLoader.
     
     NOTE: This class will return the selected extensions in the order
-          they are passed in use_extensions. For image extensions, the 
+          they are passed in override_extensions. For image extensions, the 
           loader will return a PIL Image object. 
 
-    TODO: Implement decoders for QOI, RLE, Polygons, Bboxes.
+    TODO: Implement decoders for QOI, Polygons, Bboxes.
     TODO: Add option to pass `idx` as extension to retrieve sample indices? 
     TODO: Add option to pass `name` as extension to retrieve sample names? 
     '''
@@ -157,19 +159,7 @@ class LITDataset(Dataset):
         
         # Initialize transforms
         self.transforms = []
-        
-    @property
-    def num_classes(self):
-        return self.cfg['metadata']['num_classes']
-    
-    @property
-    def num_train(self):
-        return self.cfg['metadata']['num_train']
-
-    @property
-    def num_val(self):
-        return self.cfg['metadata']['num_val']
-                
+                        
     def __len__(self):
         return len(self.offset_index)
         
@@ -177,8 +167,7 @@ class LITDataset(Dataset):
         # Load keys, incl. shard name and extension offsets.
         key_tuple = self.offset_index[key]
         shard_name, offsets = key_tuple[0], key_tuple[2:]
-        print(key_tuple[1])
-        
+                
         # Apply offsets in ascending order
         os_argsort = [i for i, _ in sorted(enumerate(offsets), key=lambda x: x[1])]
         os_sorted = sorted(offsets)
@@ -207,18 +196,14 @@ class LITDataset(Dataset):
     
     def __repr__(self):
         fold = self.fold
-        num_classes = self.num_classes
-        num_train = self.num_train
-        num_val = self.num_val
         length = len(self)
         use_extensions = self.use_extensions
+        metadata_str = ',\n'.join([f'\t{k} = {v}' for k,v in self.cfg['metadata'].items()])
         return (f'{self.__class__.__name__}(\n    ' +
-            f'fold={fold},\n    ' +
-            f'num_classes={num_classes},\n    ' +
-            f'length={length},\n    ' +
-            f'use_extensions={use_extensions},\n    ' +
-            f'num_train={num_train},\n    ' + 
-            f'num_val={num_val},\n' +
+            f'\tfold={fold},\n' +
+            f'\tlength={length},\n' +
+            f'\tuse_extensions={use_extensions},\n' +
+            metadata_str + ',\n'
         ')')
     
     @staticmethod
@@ -242,19 +227,7 @@ class LITDataset(Dataset):
     def _fixext(extensions: Tuple[str]) -> Tuple[str]:
         out = [f'.{e}' if not e.startswith('.') else e for e in extensions]
         return tuple(out)
-    
-    @staticmethod
-    def _pil_decoder(data:bytes):
-        return Image.open(BytesIO(data))
-
-    @staticmethod
-    def _cls_decoder(data:bytes):
-        return int(data)
-    
-    @staticmethod
-    def _non_decoder(data:bytes):
-        return data
-        
+            
     def map_tuple(self, *maps:Tuple[Callable,...]) -> _LITDataset_t:
         '''Takes a set of mappings and applies them to individual extensions.
         
@@ -329,15 +302,13 @@ class LITDataset(Dataset):
         
         # Use default decoders
         for idx, ext in enumerate(self.use_extensions):
+            head, wext = os.path.splitext(ext)
+            wext = head if wext == '' else wext
+            assert wext in DEFAULT_DECODERS
             if decoders[idx] is None:
-                if ext in Image.registered_extensions():
-                    decoders[idx] = self._pil_decoder       # type: ignore
-                elif ext == '.cls':
-                    decoders[idx] = self._cls_decoder       # type: ignore
-                else:
-                    decoders[idx] = self._non_decoder       # type: ignore
+                decoders[idx] = DEFAULT_DECODERS[wext]
         
-        return tuple(decoders)                              # type: ignore
+        return tuple(decoders)                                # type: ignore
             
     def generate_shard_index(self) -> Dict[str, Dict[str, Dict[str, int]]]:
         '''Generates shard index from shard list.
@@ -378,32 +349,40 @@ class LITDataset(Dataset):
     
     def generate_offset_index(self) -> List[Tuple[Union[str, int]]]:
         '''Generates offset indices from shard list.
+
+        TODO: This is a little messy. Could be simplified, but currently seems to do the job.
         
         Returns:
             List[Tuple[Union[str, int]]]: List with shardname, filename, and offsets.
         '''
         offsets = []
 
-        for key in self.shard_index:            
+        for key in self.shard_index:
             # Generate list of samples which share the relevant extensions
             sets = []
-            for i, extension in enumerate(self.use_extensions):
-                sets.append(set(self.shard_index[key][extension]))
+            for extension in self.use_extensions:
+                if extension in self.shard_index[key]:
+                    sets.append(set(self.shard_index[key][extension]))
             
-            # Take the union, giving list of samples with particular set of extensions.
-            member_list = list(set.union(*sets))
+            if not sets:  # if no sets were appended, skip this shard
+                continue
+            
+            # Take the intersection, giving list of samples with all required extensions.
+            member_list = list(set.intersection(*sets))
 
             # Generate list containing shardkey, sample name, and offsets
-            full_list = []            
+            full_list = []
             for m in member_list:
                 cur_offsets = []
-                
+
                 for extension in self.use_extensions:
-                    cur_offsets.append(self.shard_index[key][extension][m])
-                
-                full_list.append((key, m, *cur_offsets))
-            
+                    if extension in self.shard_index[key] and m in self.shard_index[key][extension]:
+                        cur_offsets.append(self.shard_index[key][extension][m])
+                    else:
+                        break
+                else:
+                    full_list.append((key, m, *cur_offsets))
+
             offsets += full_list
-        
+
         return offsets
-    
