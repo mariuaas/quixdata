@@ -253,12 +253,6 @@ class RLE(EncoderDecoder):
         vals = table[unq]
         shape = np.frombuffer(shapebytes, dtype=np.uint64)
 
-        print(vals)
-        print(cnt)
-        print(len(vals), len(cnt))
-        print(table)
-        print(np.repeat(vals, cnt).shape)
-
         return np.repeat(vals, cnt).reshape(*shape)
     
     def _encode(self, arr:np.ndarray):
@@ -290,11 +284,6 @@ class RLE(EncoderDecoder):
         shapelen = len(shapebytes).to_bytes(8, 'big')
         tablelen = len(tablebytes).to_bytes(8, 'big')
         
-        print(unq)
-        print(cnt)
-        print(len(unq), len(cnt))
-        print(table)
-
         # Concatenate
         return dtbyte + shapelen + tablelen + shapebytes + tablebytes + rlebytes
     
