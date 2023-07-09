@@ -3,12 +3,14 @@ import json
 import tarfile
 import os
 import inspect
+import random
+import copy
+from contextlib import contextmanager
 from torch.utils.data import Dataset
 
-from io import BytesIO
-from PIL import Image
 from typing import (
-    Tuple, Dict, Iterable, List, Callable, Union, TypeVar, Optional
+    Tuple, Dict, Iterable, List, Callable, Union, TypeVar, Optional, 
+    Any, Sequence
 )
 
 from .encoders import DEFAULT_DECODERS
@@ -32,7 +34,6 @@ by taking the union over elements which match the supplied extensions.
     
 Author: Marius Aasan <mariuaas@ifi.uio.no>
 '''
-
 
 _LITDataset_t = TypeVar('_LITDataset_t', bound='LITDataset')
 
@@ -78,7 +79,6 @@ class LITDataset(Dataset):
           they are passed in override_extensions. For image extensions, the 
           loader will return a PIL Image object. 
 
-    TODO: Implement decoders for QOI, Polygons, Bboxes.
     TODO: Add option to pass `idx` as extension to retrieve sample indices? 
     TODO: Add option to pass `name` as extension to retrieve sample names? 
     '''
@@ -94,6 +94,7 @@ class LITDataset(Dataset):
         train_idx_fname:str='train.idx.json',
         val_idx_fname:str='val.idx.json',
         serialize:bool=False,
+        mod_length:int=-1,
         debug:bool=False
     ):
         '''Initializes the LITDataset
@@ -113,6 +114,7 @@ class LITDataset(Dataset):
             train_idx_fname (str, optional): The train index file name to use, default to 'train.idx.json'.
             val_idx_fname (str, optional): The validation file name to use, default to 'val.idx.json'.
             serialize (bool, optional): If True, serializes the offsets in the dataset folder.
+            mod_length (int, optional): Set artificial length, sampling modulo for `key > mod_length`.
             debug (bool, optional): If True, prints to stdout during extraction of filenames.
         '''
         # Set initial parameters
@@ -121,6 +123,7 @@ class LITDataset(Dataset):
         self.root = os.path.join(loc, dataset)
         self.config_fname = config_fname
         self.index_fname = train_idx_fname if train else val_idx_fname
+        self.mod_length = mod_length
                 
         # Verify path, check for config / index files
         assert os.path.isdir(self.root)
@@ -159,11 +162,59 @@ class LITDataset(Dataset):
         
         # Initialize transforms
         self.transforms = []
+
+    @contextmanager
+    def shufflecontext(self):
+        '''Context manager to shuffle data with respect to shards.
+
+        Spawns a context manager that temporarily shuffles the order of the offset indices 
+        in the dataset, in a way that the indices from the same shard are grouped together.
+        The grouping of shard indices and the order of the groups themselves are randomized.
+        This approach reduces disk I/O by allowing efficient reading from the same shard 
+        as much as possible, while providing a level of randomness to both the order 
+        of the data within each shard and the order of the shards themselves.
+
+        Original offsets are restored once the context manager exits.
+
+        Yields:
+            None: No yield value, but modifies offset_index in place.
+
+        Example:
+            with dataset.shuffled_offsets():
+                dataloader = DataLoader(dataset)
+                for batch in dataloader:
+                    ...
+
+        NOTE: 
+            It is important to ensure that the DataLoader or whatever method you 
+            are using to fetch the data respects the order of `self.offset_index`. 
+            If it samples data points randomly from `self.offset_index`, then the 
+            effort to reduce disk I/O by grouping together data points from the same 
+            shard will be ineffective.
+        '''
+        original_offsets = self.offset_index
+        try:
+            copied_offsets = copy.deepcopy(self.offset_index)
+            shardkeys = list(self.shard_index.keys())
+            random.shuffle(shardkeys)
+            shardmap = {k:i for i,k in enumerate(shardkeys)}
+            random.shuffle(copied_offsets)
+            self.offset_index = sorted(
+                copied_offsets, 
+                key=lambda x: shardmap.get(x[0])
+            )
+
+            yield
+        finally:
+            self.offset_index = original_offsets
                         
     def __len__(self):
-        return len(self.offset_index)
+        return self.mod_length if self.mod_length > 0 else len(self.offset_index)
         
     def __getitem__(self, key):
+        # Check modulo sampling
+        key = key % len(self.offset_index) if self.mod_length > 0 else key
+        
         # Load keys, incl. shard name and extension offsets.
         key_tuple = self.offset_index[key]
         shard_name, offsets = key_tuple[0], key_tuple[2:]
@@ -228,7 +279,7 @@ class LITDataset(Dataset):
         out = [f'.{e}' if not e.startswith('.') else e for e in extensions]
         return tuple(out)
             
-    def map_tuple(self, *maps:Tuple[Callable,...]) -> _LITDataset_t:
+    def map_tuple(self, *maps:Tuple[Callable,...]) -> _LITDataset_t: # type: ignore
         '''Takes a set of mappings and applies them to individual extensions.
         
         For `maps = [f1, f2]` and `extensions = ['jpg', 'cls'], this will return
@@ -245,7 +296,7 @@ class LITDataset(Dataset):
         self.transforms.append(LITMapTuple(maps))
         return self # type: ignore
                 
-    def map_all(self, mapping:Callable) -> _LITDataset_t:
+    def map_all(self, mapping:Callable) -> _LITDataset_t: # type: ignore
         '''Takes a mapping and applies it to all extensions.
         
         For `mapping = f` and `extensions = ['jpg', 'cls'], this will return
@@ -262,11 +313,11 @@ class LITDataset(Dataset):
         self.transforms.append(LITMapAll(mapping))
         return self # type: ignore
         
-    def map(self, mapping:Callable) -> _LITDataset_t:
+    def map(self, mapping:Callable) -> _LITDataset_t: # type: ignore
         '''Takes a mapping and applies it to the tuple of extensions.
         
         For `mapping = f` and `extensions = ['jpg', 'cls'], this will return
-        the tuple `f(<sample>.jpg, f(<sample>.cls)`.
+        the tuple `f(<sample>.jpg), f(<sample>.cls)`.
 
         Args:
             mapping (Callable): The mapping to apply to.
@@ -386,3 +437,75 @@ class LITDataset(Dataset):
             offsets += full_list
 
         return offsets
+
+
+class LITConcatenated(Dataset):
+    '''A Dataset class for concatenating multiple LITDataset objects. 
+    
+    The LITConcatenated class allows for simultaneous sampling from all provided 
+    datasets in a round-robin manner. All LITDataset objects provided should be 
+    the same length or will be made to appear so through modulo operation to 
+    match the length of the longest dataset.
+    
+    NOTE: This class has rather niche applications, e.g., for self-supervised
+    learning between different datasets or for injecting random partitions or
+    segmentations to images.
+
+    Attributes:
+        datasets (tuple of LITDataset): The datasets to be concatenated.
+        maxlen (int): The length of the longest dataset, and the length to be 
+                      returned by the __len__ method.
+
+    Example:
+        dataset1 = LITDataset(...)
+        dataset2 = LITDataset(...)
+        combined_dataset = LITConcatenated(dataset1, dataset2)
+        sample = combined_dataset[5]  # Get a sample from both datasets at index 5
+
+    '''
+
+    def __init__(self, *datasets:LITDataset):
+        '''Initializes the LITConcatenated dataset.
+
+        Args:
+            datasets (LITDataset): The datasets to be concatenated.
+
+        Raises:
+            AssertionError: If any provided dataset is not an instance of LITDataset.
+        '''
+        assert all([isinstance(d, LITDataset) for d in datasets])
+        self.datasets = datasets
+        self.maxlen = max([len(d) for d in datasets]) # type:ignore
+        # Set modulo length for all smaller datasets
+        for d in datasets:
+            if len(d) < self.maxlen:
+                d.mod_length = self.maxlen
+
+    def __len__(self):
+        return self.maxlen
+
+    def __getitem__(self, key):
+        return tuple([k for d in self.datasets for k in d[key]])
+
+    def __repr__(self):
+        dstring = "\n".join([d.__repr__() for d in self.datasets])
+        return f'{self.__class__.__name__}(\n{dstring}\n)'
+
+    @contextmanager
+    def shufflecontext(self):
+        """
+        Context manager that temporarily shuffles the order of offset indices 
+        for each underlying `LITDataset`. 
+        
+        The original offsets are restored once the context manager exits.
+        """
+        context_managers = [ds.shufflecontext() for ds in self.datasets]
+
+        try:
+            for cm in context_managers:
+                cm.__enter__()
+            yield
+
+        finally:
+            for cm in reversed(context_managers):
+                cm.__exit__(None, None, None)
