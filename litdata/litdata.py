@@ -95,6 +95,7 @@ class LITDataset(Dataset):
         val_idx_fname:str='val.idx.json',
         serialize:bool=False,
         mod_length:int=-1,
+        deterministic_offset_order=True,
         debug:bool=False
     ):
         '''Initializes the LITDataset
@@ -115,6 +116,7 @@ class LITDataset(Dataset):
             val_idx_fname (str, optional): The validation file name to use, default to 'val.idx.json'.
             serialize (bool, optional): If True, serializes the offsets in the dataset folder.
             mod_length (int, optional): Set artificial length, sampling modulo for `key > mod_length`.
+            deterministic_offset_order (bool, optional): Flag to ensure the offsets are loaded deterministically.
             debug (bool, optional): If True, prints to stdout during extraction of filenames.
         '''
         # Set initial parameters
@@ -160,8 +162,19 @@ class LITDataset(Dataset):
         # Generate offset index.
         self.offset_index = self.generate_offset_index()
         
+        # Order offsets deterministically
+        if deterministic_offset_order:
+            self.offset_index = sorted(
+                self.offset_index, 
+                key=self._shard_offset_key
+            )
+        
         # Initialize transforms
         self.transforms = []
+    
+    @staticmethod
+    def _shard_offset_key(*args):
+        return (x[0], min(x[2:]))
 
     @contextmanager
     def shufflecontext(self):
