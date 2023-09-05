@@ -173,7 +173,7 @@ class LITDataset(Dataset):
         self.transforms = []
     
     @staticmethod
-    def _shard_offset_key(*args):
+    def _shard_offset_key(x):
         return (x[0], min(x[2:]))
 
     @contextmanager
