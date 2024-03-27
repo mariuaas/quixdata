@@ -163,8 +163,8 @@ cython_debug/
 
 .vscode/
 *.code-workspace
-/notebooks/localpaths.py
+/examples/localpaths.py
 *labelpermute.json
 *test_lit.ipynb
 quixdata/.trash/
-notebooks/
+examples/
