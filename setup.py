@@ -1,9 +1,9 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='litdata',
-    version='0.31',
-    description='Local Indexed Tar Datasets',
+    name='quixdata',
+    version='1.0c',
+    description='QuixData: Multimodal Sharded Data for Pytorch',
     author='Marius Aasan <mariuaas(at)ifi.uio.no>',
     license='MIT',
     packages=find_packages()

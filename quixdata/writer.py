@@ -1,3 +1,57 @@
+'''
+Quix Data Writing
+=================
+
+This module provides a set of classes designed for efficient creation and management 
+of large datasets stored in a sharded tar format. These utilities are particularly 
+useful for handling datasets in environments where direct access to filesystems is available,
+optimizing for speed and flexibility in dataset manipulation.
+
+The module contains three main classes:
+
+- `IndexedTarWriter`: A class for writing objects to a tar file, supporting custom encoding
+  methods and maintaining an index of byte offsets for efficient retrieval.
+
+- `IndexedShardWriter`: Manages writing data to multiple tar files (shards), creating new 
+  shards based on specified size or file count limits.
+
+- `QuixWriter`: A high-level utility for creating and managing Quix datasets, orchestrating
+  the storage pattern, writing data, and managing metadata and indices in sharded tar files.
+
+The classes are designed to work together, providing a streamlined process for dataset 
+creation, from individual data items to complete datasets organized into shards.
+
+Classes
+-------
+IndexedTarWriter
+    Writes objects to a tar file with indexed contents for efficient retrieval.
+IndexedShardWriter
+    Manages writing data to multiple tar files, handling shard creation and organization.
+QuixWriter
+    High-level utility for creating and managing datasets in the Quix framework.
+
+Example Usage
+-------------
+Creating a new Quix dataset and writing data to it:
+
+```python
+from quix_tar_writing_utils import QuixWriter
+
+# Initialize a QuixWriter for the dataset
+quix_writer = QuixWriter(dataset_name='example_dataset', loc='/path/to/dataset')
+
+# Write data to the training and validation sets
+quix_writer.train.write({'__key__': 'sample1', 'image.jpg': image_data, 'label.txt': label_data})
+quix_writer.val.write({'__key__': 'sample2', 'image.jpg': image_data, 'label.txt': label_data})
+
+# Finalize the dataset
+quix_writer.close()
+
+Author
+------
+Marius Aasan <mariuaas@ifi.uio.no>
+
+'''
 import tarfile
 import os
 import time
@@ -15,6 +69,47 @@ _validcomp = ['gz', 'bz2', 'xz']
 
 
 class IndexedTarWriter:
+    """A writer for creating tar files with indexed contents.
+
+    This class is designed to write objects to a tar file, supporting optional compression
+    and custom encoding methods for different file types. It maintains an index of byte offsets
+    for efficient retrieval of files from the tar archive.
+
+    Parameters
+    ----------
+    fileobj : StrOrStream
+        The file name or file object to write the tar file to.
+    username : Optional[str], optional
+        The user name to use in the tar file metadata, by default the current user.
+    groupname : str, optional
+        The group name to use in the tar file metadata, by default 'defaultgroup'.
+    mode : int, optional
+        The file permission mode to use in the tar file metadata, by default 292.
+    compression : Optional[str], optional
+        The compression method ('gz', 'bz2', 'xz', or None), by default None.
+    override_encoders : Optional[Iterable[Tuple[str, Callable]]], optional
+        Custom encoders for specific file extensions, by default None.
+
+    Attributes
+    ----------
+    encoders : dict
+        A dictionary of file encoders, keyed by file extension.
+    username : str
+        Username to include in the tar file metadata.
+    groupname : str
+        Group name to include in the tar file metadata.
+    mode : int
+        File permission mode to include in the tar file metadata.
+    index : OrderedDict
+        An ordered dictionary mapping file extensions to byte offsets.
+
+    Methods
+    -------
+    write(objdict: dict) -> int
+        Writes objects to the tar file based on the provided dictionary.
+    close()
+        Closes the tar file and associated resources.
+    """
 
     def __init__(
         self,
@@ -75,20 +170,22 @@ class IndexedTarWriter:
         )
     
     def write(self, objdict:dict):
-        '''
-        Write objects to the tar file.
+        """Writes objects to the tar file based on the provided dictionary.
 
-        The `objdict` dictionary must contain a '__key__' key, whose corresponding value 
-        will be used as the prefix for the names of all files written from this dictionary.
-        Each other item in the dictionary will be encoded to bytes using the encoder
+        Each item in the dictionary is encoded to bytes using the appropriate encoder
         for its file extension and then written to the tar file as a separate file.
 
-        Args:
-            objdict (dict): A dictionary where the keys are file names and the values are Python objects.
+        Parameters
+        ----------
+        objdict : dict
+            A dictionary where the keys are file names and the values are Python objects.
+            Must contain a '__key__' key for naming the files.
 
-        Returns:
-            int: The total size of all data written to the tar file from this dictionary, in bytes.
-        '''
+        Returns
+        -------
+        int
+            The total size of all data written to the tar file from this dictionary, in bytes.
+        """
         assert '__key__' in objdict
         assert len(objdict) > 1
         key = objdict['__key__']
@@ -120,8 +217,7 @@ class IndexedTarWriter:
         return totalsize
     
     def close(self):
-        '''
-        Close the tar file.
+        '''Close the tar file.
 
         If the file object was created by this IndexedTarWriter instance, it is also closed.
         '''
@@ -137,23 +233,58 @@ class IndexedTarWriter:
 
 
 class IndexedShardWriter:
-    '''Writes data to multiple shard files, each of which is a tar file.
-    
-    This class manages writing data to multiple tar files, creating a new shard
-    when the current one becomes too large or contains too many files.
+    """Manages writing data to multiple shard files, each being a tar file.
 
-    Attributes:
-        base_pattern (str): The base pattern for the file names of the shards.
-        shard_maxfiles (int): Maximum number of files per shard.
-        shard_maxsize (float): Maximum size of each shard in bytes.
-        next_shard_index (int): Index to use for naming the next shard.
-        cur_tarfile (IndexedTarWriter): Current tar file being written to.
-        cur_shardname (str): Name of the current shard.
-        cur_totalsize (int): Current size of the shard being written to.
-        cur_count (int): Current number of files in the shard.
-        total_count (int): Total number of files written across all shards.
-        index (dict): A dictionary mapping from shard names to indices.
-    '''
+    This class handles the creation of new shards when the current shard reaches
+    its maximum size or file count, ensuring efficient organization of large datasets.
+
+    Parameters
+    ----------
+    base_pattern : str
+        The pattern for naming shard files, with a placeholder for the shard index.
+    start : int, optional
+        The starting index for shard files, by default 0.
+    shard_maxfiles : int, optional
+        The maximum number of files per shard, by default 100000.
+    shard_maxsize : float, optional
+        The maximum size of each shard in bytes, by default 3e9.
+    **kwargs : dict
+        Additional keyword arguments for IndexedTarWriter.
+
+    Attributes
+    ----------
+    base_pattern : str
+        The base pattern for shard file names.
+    shard_maxfiles : int
+        Maximum number of files per shard.
+    shard_maxsize : float
+        Maximum size of each shard in bytes.
+    next_shard_index : int
+        Index for the next shard file.
+    cur_tarfile : IndexedTarWriter
+        The current tar file being written to.
+    cur_shardname : str
+        The name of the current shard file.
+    cur_totalsize : int
+        The current size of the shard being written to.
+    cur_count : int
+        The current number of files in the shard.
+    total_count : int
+        The total number of files written across all shards.
+    index : dict
+        A dictionary mapping shard names to offset indices.
+
+    Methods
+    -------
+    new_shard()
+        Finalizes the current shard and starts a new one.
+    finalize_shard()
+        Finalizes the current shard and stores its offset indices.
+    close()
+        Closes the current shard and all associated resources.
+    write(objdict: dict)
+        Writes a dictionary of objects to the current shard.
+    """
     def __init__(
         self,
         base_pattern:str,
@@ -191,8 +322,11 @@ class IndexedShardWriter:
         self.new_shard()
 
     def new_shard(self):
-        '''Finalizes the current shard and starts a new one.
-        '''
+        """Finalizes the current shard and starts a new one.
+
+        Closes the current tar file and opens a new one for the next shard, 
+        updating the shard name and resetting counters.
+        """
         self.finalize_shard()
         self.cur_shardname = self.base_pattern % self.next_shard_index
         self.next_shard_index += 1
@@ -201,8 +335,11 @@ class IndexedShardWriter:
         self.cur_totalsize = 0
 
     def finalize_shard(self):
-        '''Finalizes current shard and stores the offset indices.
-        '''
+        """Finalizes the current shard and stores the offset indices.
+
+        Closes the current tar file and updates the index with the byte offsets
+        of the files contained within the shard.
+        """
         if self.cur_tarfile is not None:
             self.cur_tarfile.close()
             assert self.cur_shardname is not None
@@ -229,9 +366,11 @@ class IndexedShardWriter:
         Each other item in the dictionary will be encoded to bytes using the encoder
         for its file extension and then written to the tar file as a separate file.
 
-        Args:
-            objdict (dict): A dictionary where the keys are file names and the values are Python objects.
-        
+        Parameters
+        ----------
+        objdict : dict
+            A dictionary where the keys are file names and the values are Python objects.
+            Must contain a '__key__' key for naming the files.
         '''
         if (
             (self.cur_tarfile is None) or 
@@ -258,29 +397,49 @@ class IndexedShardWriter:
         return repr_str
 
 
-class LITWriter:
+class QuixWriter:
+    """Utility class for creating and managing Quix datasets in sharded tar format.
 
-    '''A utility class for writing datasets for use in the LIT framework.
+    Provides functionalities for setting up datasets, configuring their storage patterns,
+    and writing data into sharded tar files. It also manages dataset metadata and indices.
 
-    This class provides utilities for creating LIT datasets and writing them
-    into sharded tar files. This includes the configuration of the datasets, setting 
-    their names and locations, and managing their storage pattern. The LITWriter also 
-    manages the writing of data to the tar files and the updating of metadata and index files.
+    Parameters
+    ----------
+    dataset_name : str
+        The name of the dataset.
+    loc : str
+        The directory where the dataset will be stored.
+    pattern : str, optional
+        The pattern for naming tar files, by default '{}_%04d.tar'.
+    trainstr : str, optional
+        The string identifier for the training set in file names, by default 'train'.
+    valstr : str, optional
+        The string identifier for the validation set in file names, by default 'val'.
+    additional_metadata : dict, optional
+        Additional metadata for the dataset, by default {}.
+    config_fname : str, optional
+        The name of the configuration file, by default 'config.json'.
+    train_idx_fname : str, optional
+        The name of the training index file, by default 'train.idx.json'.
+    val_idx_fname : str, optional
+        The name of the validation index file, by default 'val.idx.json'.
+    **kwargs : dict
+        Additional keyword arguments for IndexedShardWriter.
 
-    Attributes:
-        dataset_name (str): Name of the dataset.
-        loc (str): Directory where the dataset will be stored.
-        fullpath (str): Full path to the directory where the dataset will be stored.
-        train_pattern (str): Pattern used to name the tar files for the training set.
-        val_pattern (str): Pattern used to name the tar files for the validation set.
-        train (IndexedShardWriter): Shard writer for the training set.
-        val (IndexedShardWriter): Shard writer for the validation set.
-        config_fname (str): Name of the configuration file.
-        train_idx_fname (str): Name of the index file for the training set.
-        val_idx_fname (str): Name of the index file for the validation set.
-        cfg (dict): A dictionary containing the dataset's configuration details.
-    '''
+    Attributes
+    ----------
+    train : IndexedShardWriter
+        Shard writer for the training set.
+    val : IndexedShardWriter
+        Shard writer for the validation set.
+    cfg : dict
+        Configuration details of the dataset.
 
+    Methods
+    -------
+    close()
+        Finalizes the dataset and writes configuration and index files.
+    """
     def __init__(
         self,
         dataset_name:str,
@@ -295,7 +454,7 @@ class LITWriter:
         **kwargs
     ):
         '''
-        Initializes a LITWriter with the provided dataset name, location, naming 
+        Initializes a QuixWriter with the provided dataset name, location, naming 
         pattern, and additional arguments.
 
         Args:
@@ -357,7 +516,7 @@ class LITWriter:
         self.close()
     
     def close(self):
-        '''Closes the LITWriter.
+        '''Closes the QuixWriter.
 
         Finalizes the dataset by closing the training and validation ShardWriters, 
         gathering the file extensions, updating the configuration, and writing the 

@@ -166,3 +166,5 @@ cython_debug/
 /notebooks/localpaths.py
 *labelpermute.json
 *test_lit.ipynb
+quixdata/.trash/
+notebooks/
